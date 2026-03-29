@@ -208,6 +208,10 @@ class Lora2MqttPlugin implements IntegrationPlugin {
 
   getStatus(): IntegrationStatus {
     if (!this.isConfigured()) return "not_configured";
+    // Reflect actual MQTT connection state
+    if (this.status === "connected" && this.mqttConnector && !this.mqttConnector.isConnected()) {
+      return "error";
+    }
     return this.status;
   }
 
