@@ -1,0 +1,19 @@
+{
+  "name": "sowel-plugin-lora2mqtt",
+  "version": "1.0.0",
+  "description": "Sowel plugin: LoRa2MQTT devices",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "AGPL-3.0"
+}
