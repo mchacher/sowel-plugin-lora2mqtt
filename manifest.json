@@ -1,17 +1,46 @@
 {
   "id": "lora2mqtt",
+  "type": "integration",
   "name": "LoRa2MQTT",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "LoRa devices via lora2mqtt MQTT bridge",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-lora2mqtt",
   "author": "mchacher",
   "sowelVersion": ">=0.10.0",
   "settings": [
-    { "key": "mqtt_url", "label": "MQTT Broker URL", "type": "text", "required": true, "placeholder": "mqtt://192.168.0.45:1883" },
-    { "key": "mqtt_username", "label": "MQTT Username", "type": "text", "required": false },
-    { "key": "mqtt_password", "label": "MQTT Password", "type": "password", "required": false },
-    { "key": "mqtt_client_id", "label": "MQTT Client ID", "type": "text", "required": false, "defaultValue": "sowel-lora" },
-    { "key": "base_topic", "label": "LoRa2MQTT Base Topic", "type": "text", "required": false, "defaultValue": "lora2mqtt" }
+    {
+      "key": "mqtt_url",
+      "label": "MQTT Broker URL",
+      "type": "text",
+      "required": true,
+      "placeholder": "mqtt://192.168.0.45:1883"
+    },
+    {
+      "key": "mqtt_username",
+      "label": "MQTT Username",
+      "type": "text",
+      "required": false
+    },
+    {
+      "key": "mqtt_password",
+      "label": "MQTT Password",
+      "type": "password",
+      "required": false
+    },
+    {
+      "key": "mqtt_client_id",
+      "label": "MQTT Client ID",
+      "type": "text",
+      "required": false,
+      "defaultValue": "sowel-lora"
+    },
+    {
+      "key": "base_topic",
+      "label": "LoRa2MQTT Base Topic",
+      "type": "text",
+      "required": false,
+      "defaultValue": "lora2mqtt"
+    }
   ]
 }
