@@ -278,7 +278,10 @@ class Lora2MqttPlugin implements IntegrationPlugin {
 
   async executeOrder(_device: Device, dispatchConfig: Record<string, unknown>, value: unknown): Promise<void> {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
-    const topic = dispatchConfig.topic as string;
+    const baseTopic = this.getSetting("base_topic") ?? "lora2mqtt";
+    const topic = dispatchConfig.topicSuffix
+      ? `${baseTopic}/${dispatchConfig.topicSuffix}`
+      : dispatchConfig.topic as string;
     const payloadKey = dispatchConfig.payloadKey as string;
     if (!topic || !payloadKey) throw new Error("Missing topic or payloadKey");
     const payload: Record<string, unknown> = {};
@@ -356,7 +359,7 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       if (meta.access === "rw") {
         orders.push({
           key, type: dataType,
-          dispatchConfig: { topic: `${baseTopic}/${node.friendly_name}/set`, payloadKey: key },
+          dispatchConfig: { topicSuffix: `${node.friendly_name}/set`, payloadKey: key },
           enumValues: meta.values,
         });
       }
