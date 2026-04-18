@@ -31,7 +31,7 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string }[];
-  orders: { key: string; type: string; dispatchConfig?: Record<string, unknown>; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: { key: string; type: string; category?: string; dispatchConfig?: Record<string, unknown>; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
 }
 
 interface DeviceManager {
@@ -90,6 +90,14 @@ const PROPERTY_TO_CATEGORY: Record<string, DataCategory> = {
   color_temp: "light_brightness",
   rain: "rain",
   wind: "wind",
+};
+
+const DATA_CATEGORY_TO_ORDER_CATEGORY: Record<string, string> = {
+  light_state: "light_toggle",
+  gate_state: "gate_trigger",
+  power: "toggle_power",
+  shutter_position: "set_shutter_position",
+  light_brightness: "set_brightness",
 };
 
 // ============================================================
@@ -179,7 +187,7 @@ class MqttConnector {
 interface LoraNode {
   node_id: number;
   friendly_name: string | null;
-  data_keys: Record<string, { type: string; access: string; values?: string[]; description?: string; category?: string }>;
+  data_keys: Record<string, { type: string; access: string; values?: string[]; description?: string; category?: string; order_category?: string }>;
   is_active: boolean;
 }
 
@@ -353,8 +361,9 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       data.push({ key, type: dataType, category });
 
       if (meta.access === "rw") {
+        const orderCategory = meta.order_category ?? DATA_CATEGORY_TO_ORDER_CATEGORY[category] ?? undefined;
         orders.push({
-          key, type: dataType,
+          key, type: dataType, category: orderCategory,
           enumValues: meta.values,
         });
       }

@@ -2,12 +2,12 @@
   "id": "lora2mqtt",
   "type": "integration",
   "name": "LoRa2MQTT",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "LoRa devices via lora2mqtt MQTT bridge",
   "icon": "Radio",
   "repo": "mchacher/sowel-plugin-lora2mqtt",
   "author": "mchacher",
-  "sowelVersion": ">=0.10.0",
+  "sowelVersion": ">=1.2.12",
   "settings": [
     {
       "key": "mqtt_url",
