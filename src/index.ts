@@ -31,7 +31,7 @@ interface DiscoveredDevice {
   ieeeAddress?: string; friendlyName: string; manufacturer?: string; model?: string;
   rawExpose?: unknown;
   data: { key: string; type: string; category: string; unit?: string }[];
-  orders: { key: string; type: string; dispatchConfig: Record<string, unknown>; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
+  orders: { key: string; type: string; dispatchConfig?: Record<string, unknown>; min?: number; max?: number; enumValues?: string[]; unit?: string }[];
 }
 
 interface DeviceManager {
@@ -50,9 +50,10 @@ interface IntegrationSettingDef { key: string; label: string; type: "text" | "pa
 
 interface IntegrationPlugin {
   readonly id: string; readonly name: string; readonly description: string; readonly icon: string;
+  readonly apiVersion?: number;
   getStatus(): IntegrationStatus; isConfigured(): boolean; getSettingsSchema(): IntegrationSettingDef[];
   start(options?: { pollOffset?: number }): Promise<void>; stop(): Promise<void>;
-  executeOrder(device: Device, dispatchConfig: Record<string, unknown>, value: unknown): Promise<void>;
+  executeOrder(device: Device, orderKeyOrDispatchConfig: string | Record<string, unknown>, value: unknown): Promise<void>;
   refresh?(): Promise<void>; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
 }
 
@@ -191,6 +192,7 @@ class Lora2MqttPlugin implements IntegrationPlugin {
   readonly name = "LoRa2MQTT";
   readonly description = "LoRa devices via lora2mqtt bridge";
   readonly icon = "Radio";
+  readonly apiVersion = 2;
 
   private logger: Logger;
   private eventBus: EventBus;
@@ -276,17 +278,11 @@ class Lora2MqttPlugin implements IntegrationPlugin {
     }
   }
 
-  async executeOrder(_device: Device, dispatchConfig: Record<string, unknown>, value: unknown): Promise<void> {
+  async executeOrder(device: Device, orderKey: string, value: unknown): Promise<void> {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
     const baseTopic = this.getSetting("base_topic") ?? "lora2mqtt";
-    const topic = dispatchConfig.topicSuffix
-      ? `${baseTopic}/${dispatchConfig.topicSuffix}`
-      : dispatchConfig.topic as string;
-    const payloadKey = dispatchConfig.payloadKey as string;
-    if (!topic || !payloadKey) throw new Error("Missing topic or payloadKey");
-    const payload: Record<string, unknown> = {};
-    payload[payloadKey] = value;
-    this.mqttConnector.publish(topic, JSON.stringify(payload));
+    const topic = `${baseTopic}/${device.sourceDeviceId}/set`;
+    this.mqttConnector.publish(topic, JSON.stringify({ [orderKey]: value }));
   }
 
   // ============================================================
@@ -359,7 +355,6 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       if (meta.access === "rw") {
         orders.push({
           key, type: dataType,
-          dispatchConfig: { topicSuffix: `${node.friendly_name}/set`, payloadKey: key },
           enumValues: meta.values,
         });
       }
