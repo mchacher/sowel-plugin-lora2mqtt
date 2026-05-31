@@ -100,6 +100,26 @@ const DATA_CATEGORY_TO_ORDER_CATEGORY: Record<string, string> = {
   light_brightness: "set_brightness",
 };
 
+/**
+ * Coerce a raw contact_door value to boolean.
+ * 0/false/"0"/"false" → false (open); 1/true/"1"/"true" → true (closed).
+ * Other values pass through untouched (Sowel will treat them as stale/unknown).
+ */
+function toContactBoolean(value: unknown): unknown {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 0) return false;
+    if (value === 1) return true;
+    return value;
+  }
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower === "0" || lower === "false") return false;
+    if (lower === "1" || lower === "true") return true;
+  }
+  return value;
+}
+
 // ============================================================
 // MQTT Connector (self-contained)
 // ============================================================
@@ -208,6 +228,7 @@ class Lora2MqttPlugin implements IntegrationPlugin {
   private deviceManager: DeviceManager;
   private mqttConnector: MqttConnector | null = null;
   private status: IntegrationStatus = "disconnected";
+  private contactKeysByDevice: Map<string, Set<string>> = new Map();
 
   constructor(deps: PluginDeps) {
     this.logger = deps.logger;
@@ -312,6 +333,10 @@ class Lora2MqttPlugin implements IntegrationPlugin {
         const parsed = this.parseNode(baseTopic, node);
         if (parsed) this.deviceManager.upsertFromDiscovery(baseTopic, "lora2mqtt", parsed);
       }
+      // Drop contact key tracking for devices no longer present.
+      for (const name of this.contactKeysByDevice.keys()) {
+        if (!currentNames.has(name)) this.contactKeysByDevice.delete(name);
+      }
       this.deviceManager.removeStaleDevices(baseTopic, currentNames);
     } catch (err) {
       this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices");
@@ -330,6 +355,16 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       const cleaned = { ...data };
       delete cleaned["#tx"];
       if (cleaned.action === "click") cleaned.action = "single";
+      // Normalize contact_door values to boolean. LoRa nodes typically expose
+      // contact as numeric 0/1; Sowel's gate state derivation expects boolean.
+      // Convention: 0/false → false (open), 1/true → true (closed).
+      const contactKeys = this.contactKeysByDevice.get(rest);
+      if (contactKeys) {
+        for (const k of contactKeys) {
+          if (!(k in cleaned)) continue;
+          cleaned[k] = toContactBoolean(cleaned[k]);
+        }
+      }
       if (Object.keys(cleaned).length > 0) {
         this.deviceManager.updateDeviceData(baseTopic, rest, cleaned as Record<string, unknown>);
       }
@@ -358,9 +393,17 @@ class Lora2MqttPlugin implements IntegrationPlugin {
     const data: DiscoveredDevice["data"] = [];
     const orders: DiscoveredDevice["orders"] = [];
 
+    const contactKeys = new Set<string>();
     for (const [key, meta] of Object.entries(node.data_keys ?? {})) {
-      const dataType: DataType = LORA_TYPE_TO_DATA_TYPE[meta.type] ?? "text";
+      let dataType: DataType = LORA_TYPE_TO_DATA_TYPE[meta.type] ?? "text";
       const category: DataCategory = (meta.category as DataCategory) ?? PROPERTY_TO_CATEGORY[key] ?? "generic";
+      // Sowel's contact_door category is consumed as a boolean (see gate state
+      // derivation in equipment-manager). Force the type and track the key so
+      // payload values get coerced at message time.
+      if (category === "contact_door") {
+        dataType = "boolean";
+        contactKeys.add(key);
+      }
       data.push({ key, type: dataType, category });
 
       if (meta.access === "rw") {
@@ -370,6 +413,12 @@ class Lora2MqttPlugin implements IntegrationPlugin {
           enumValues: meta.values,
         });
       }
+    }
+
+    if (contactKeys.size > 0) {
+      this.contactKeysByDevice.set(node.friendly_name, contactKeys);
+    } else {
+      this.contactKeysByDevice.delete(node.friendly_name);
     }
 
     return {
