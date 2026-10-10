@@ -207,7 +207,7 @@ class MqttConnector {
 interface LoraNode {
   node_id: number;
   friendly_name: string | null;
-  data_keys: Record<string, { type: string; access: string; values?: string[]; description?: string; category?: string; order_category?: string }>;
+  data_keys: Record<string, { type: string; access: string; values?: string[]; description?: string; category?: string; order_category?: string; unit?: string }>;
   is_active: boolean;
 }
 
@@ -404,13 +404,15 @@ class Lora2MqttPlugin implements IntegrationPlugin {
         dataType = "boolean";
         contactKeys.add(key);
       }
-      data.push({ key, type: dataType, category });
+      // The unit comes from the bridge's node descriptor, like zigbee2mqtt's
+      // exposes: copied as-is, never inferred from the category.
+      data.push({ key, type: dataType, category, unit: meta.unit });
 
       if (meta.access === "rw") {
         const orderCategory = meta.order_category ?? DATA_CATEGORY_TO_ORDER_CATEGORY[category] ?? undefined;
         orders.push({
           key, type: dataType, category: orderCategory,
-          enumValues: meta.values,
+          enumValues: meta.values, unit: meta.unit,
         });
       }
     }
