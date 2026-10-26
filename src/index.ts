@@ -6,7 +6,9 @@
  * Supports read + write (orders via MQTT publish).
  */
 
+import { randomUUID } from "node:crypto";
 import mqtt, { type MqttClient, type IClientOptions } from "mqtt";
+import { ReceiptTracker, type OrderReceiptEvent } from "./receipts.js";
 
 // ============================================================
 // Local type definitions
@@ -24,7 +26,12 @@ interface Logger {
   debug(msg: string): void;
 }
 
-interface EventBus { emit(event: unknown): void; }
+type PluginEvent =
+  | { type: "system.integration.connected"; integrationId: string }
+  | { type: "system.integration.disconnected"; integrationId: string }
+  | OrderReceiptEvent;
+
+interface EventBus { emit(event: PluginEvent): void; }
 interface SettingsManager { get(key: string): string | undefined; set(key: string, value: string): void; }
 
 interface DiscoveredDevice {
@@ -209,6 +216,8 @@ interface LoraNode {
   friendly_name: string | null;
   data_keys: Record<string, { type: string; access: string; values?: string[]; description?: string; category?: string; order_category?: string; unit?: string }>;
   is_active: boolean;
+  /** The node answers each order with a receipt on `<base>/<node>/receipt` (bridge C12). */
+  receipts?: boolean;
 }
 
 // ============================================================
@@ -229,12 +238,16 @@ class Lora2MqttPlugin implements IntegrationPlugin {
   private mqttConnector: MqttConnector | null = null;
   private status: IntegrationStatus = "disconnected";
   private contactKeysByDevice: Map<string, Set<string>> = new Map();
+  /** friendly_names of the nodes that declare `"receipts": true`. */
+  private receiptNodes: Set<string> = new Set();
+  private receipts: ReceiptTracker;
 
   constructor(deps: PluginDeps) {
     this.logger = deps.logger;
     this.eventBus = deps.eventBus;
     this.settingsManager = deps.settingsManager;
     this.deviceManager = deps.deviceManager;
+    this.receipts = new ReceiptTracker(INTEGRATION_ID, (event) => this.eventBus.emit(event), this.logger);
   }
 
   getStatus(): IntegrationStatus {
@@ -284,6 +297,11 @@ class Lora2MqttPlugin implements IntegrationPlugin {
         this.handleDeviceState(baseTopic, topic, payload);
       });
 
+      // Subscribe to order receipts (spec 188)
+      this.mqttConnector.subscribe(`${baseTopic}/+/receipt`, (_topic, payload) => {
+        this.handleReceipt(payload);
+      });
+
       // Subscribe to availability
       this.mqttConnector.subscribe(`${baseTopic}/+/availability`, (topic, payload) => {
         this.handleAvailability(baseTopic, topic, payload);
@@ -301,6 +319,7 @@ class Lora2MqttPlugin implements IntegrationPlugin {
   }
 
   async stop(): Promise<void> {
+    this.receipts.clear();
     if (this.mqttConnector) {
       await this.mqttConnector.disconnect();
       this.mqttConnector = null;
@@ -314,7 +333,16 @@ class Lora2MqttPlugin implements IntegrationPlugin {
     if (!this.mqttConnector?.isConnected()) throw new Error("MQTT not connected");
     const baseTopic = this.getSetting("base_topic") ?? "lora2mqtt";
     const topic = `${baseTopic}/${device.sourceDeviceId}/set`;
-    this.mqttConnector.publish(topic, JSON.stringify({ [orderKey]: value }));
+    if (!this.receiptNodes.has(device.sourceDeviceId)) {
+      this.mqttConnector.publish(topic, JSON.stringify({ [orderKey]: value }));
+      return;
+    }
+    // Tag the order so the bridge echoes its outcome, then return at once:
+    // the outcome comes as an event, never by awaiting here (the core retries
+    // a throwing executeOrder after 2 s, which would re-pulse a gate).
+    const id = randomUUID();
+    this.mqttConnector.publish(topic, JSON.stringify({ [orderKey]: value, "#id": id }));
+    this.receipts.track(id, device.id, orderKey);
   }
 
   // ============================================================
@@ -327,9 +355,11 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       this.logger.info({ count: nodes.length }, "Received bridge/devices");
 
       const currentNames = new Set<string>();
+      const receiptNodes = new Set<string>();
       for (const node of nodes) {
         if (!node.friendly_name) continue;
         currentNames.add(node.friendly_name);
+        if (node.receipts === true) receiptNodes.add(node.friendly_name);
         const parsed = this.parseNode(baseTopic, node);
         if (parsed) this.deviceManager.upsertFromDiscovery(baseTopic, "lora2mqtt", parsed);
       }
@@ -337,6 +367,7 @@ class Lora2MqttPlugin implements IntegrationPlugin {
       for (const name of this.contactKeysByDevice.keys()) {
         if (!currentNames.has(name)) this.contactKeysByDevice.delete(name);
       }
+      this.receiptNodes = receiptNodes;
       this.deviceManager.removeStaleDevices(baseTopic, currentNames);
     } catch (err) {
       this.logger.error({ err } as Record<string, unknown>, "Failed to parse bridge/devices");
@@ -369,6 +400,12 @@ class Lora2MqttPlugin implements IntegrationPlugin {
         this.deviceManager.updateDeviceData(baseTopic, rest, cleaned as Record<string, unknown>);
       }
     } catch { /* non-JSON ignored */ }
+  }
+
+  private handleReceipt(payload: Buffer): void {
+    let msg: unknown;
+    try { msg = JSON.parse(payload.toString()); } catch { return; }
+    this.receipts.handleReceipt(msg);
   }
 
   private handleAvailability(baseTopic: string, topic: string, payload: Buffer): void {
