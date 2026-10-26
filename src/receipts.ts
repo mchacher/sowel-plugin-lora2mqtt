@@ -44,6 +44,7 @@ interface PendingOrder {
 
 interface ReceiptLogger {
   debug(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
 }
 
 export class ReceiptTracker {
@@ -57,6 +58,14 @@ export class ReceiptTracker {
 
   /** Register an order just published with `#id` = id, and emit `pending`. */
   track(id: string, deviceId: string, orderKey: string): void {
+    // The core correlates by (device, key), last order wins (spec 188): a
+    // superseded order must never emit again, not even its late receipt.
+    for (const [otherId, other] of this.pending) {
+      if (other.deviceId === deviceId && other.orderKey === orderKey) {
+        clearTimeout(other.timer);
+        this.pending.delete(otherId);
+      }
+    }
     const entry: PendingOrder = {
       deviceId, orderKey, status: "pending",
       timer: setTimeout(() => this.fallback(id), RECEIPT_FALLBACK_MS),
@@ -84,6 +93,8 @@ export class ReceiptTracker {
     const wasTerminal = isTerminal(entry.status);
     // The bridge's own `timeout` after our fallback already said `unconfirmed`: nothing new.
     if (status === entry.status && wasTerminal) return;
+    // A reordered intermediate (`received` after `delivered`) never overwrites a verdict.
+    if (wasTerminal && !isTerminal(status)) return;
 
     // Late: the bridge says so, or we already gave a terminal verdict (our 20 s fallback).
     const late = msg.late === true || wasTerminal;
@@ -96,9 +107,16 @@ export class ReceiptTracker {
     }
   }
 
-  /** Forget everything and cancel all timers (plugin stop). */
+  /**
+   * Forget everything and cancel all timers (plugin stop). Orders still
+   * waiting get `unconfirmed` first, so no tile stays on pending.
+   */
   clear(): void {
-    for (const entry of this.pending.values()) clearTimeout(entry.timer);
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      if (isTerminal(entry.status)) continue;
+      this.send(entry, "unconfirmed");
+    }
     this.pending.clear();
   }
 
@@ -122,7 +140,10 @@ export class ReceiptTracker {
       status,
     };
     if (late) event.late = true;
-    this.emit(event);
+    // Never let the bus throw back into executeOrder, a timer or stop().
+    try { this.emit(event); } catch (err) {
+      this.logger.warn({ err: String(err), status }, "Could not emit the order receipt");
+    }
   }
 }
 

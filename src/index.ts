@@ -340,9 +340,18 @@ class Lora2MqttPlugin implements IntegrationPlugin {
     // Tag the order so the bridge echoes its outcome, then return at once:
     // the outcome comes as an event, never by awaiting here (the core retries
     // a throwing executeOrder after 2 s, which would re-pulse a gate).
-    const id = randomUUID();
-    this.mqttConnector.publish(topic, JSON.stringify({ [orderKey]: value, "#id": id }));
-    this.receipts.track(id, device.id, orderKey);
+    let id: string | null = null;
+    try { id = randomUUID(); } catch (err) {
+      this.logger.warn({ err } as Record<string, unknown>, "Could not tag the order, sent without receipt");
+    }
+    this.mqttConnector.publish(topic, JSON.stringify(id ? { [orderKey]: value, "#id": id } : { [orderKey]: value }));
+    if (!id) return;
+    try {
+      this.receipts.track(id, device.id, orderKey);
+    } catch (err) {
+      // Receipt bookkeeping must never make executeOrder throw (the core would retry).
+      this.logger.error({ err, device: device.sourceDeviceId, orderKey } as Record<string, unknown>, "Receipt tracking failed");
+    }
   }
 
   // ============================================================

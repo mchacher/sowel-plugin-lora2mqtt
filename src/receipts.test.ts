@@ -76,7 +76,11 @@ describe("order receipts (spec 188 R6)", () => {
 
   it("tags an order on a receipts node, emits pending and returns at once", async () => {
     const { plugin, emit } = await startPlugin();
-    await plugin.executeOrder(GATE, "gate", 1);
+    // Resolves without any timer moving and without any receipt.
+    const settled = vi.fn();
+    void plugin.executeOrder(GATE, "gate", 1).then(settled);
+    await Promise.resolve(); await Promise.resolve();
+    expect(settled).toHaveBeenCalledOnce();
 
     const last = client.published.at(-1)!;
     expect(last.topic).toBe("lora2mqtt/portail/set");
@@ -198,13 +202,76 @@ describe("order receipts (spec 188 R6)", () => {
     await plugin.stop();
   });
 
-  it("cancels every timer on stop", async () => {
+  it("says unconfirmed for waiting orders on stop, and cancels every timer", async () => {
     const { plugin, emit } = await startPlugin();
-    await sendGateOrder(plugin);
+    const id = await sendGateOrder(plugin);
+    inject("lora2mqtt/portail/receipt", { id, counter: 12, result: "received", ms: 300, late: false });
     await plugin.stop();
     vi.advanceTimersByTime(RECEIPT_FALLBACK_MS * 2);
 
-    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending"]);
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "received", "unconfirmed"]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not repeat a terminal verdict on stop", async () => {
+    const { plugin, emit } = await startPlugin();
+    const id = await sendGateOrder(plugin);
+    inject("lora2mqtt/portail/receipt", { id, counter: 12, result: "applied", ms: 245, late: false });
+    await plugin.stop();
+
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "delivered"]);
+  });
+
+  it("lets a newer order on the same device and key supersede the older one", async () => {
+    const { plugin, emit } = await startPlugin();
+    const idA = await sendGateOrder(plugin);
+    vi.advanceTimersByTime(RECEIPT_FALLBACK_MS / 2);
+    const idB = await sendGateOrder(plugin);
+    expect(idB).not.toBe(idA);
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "pending"]);
+
+    // A's late receipt and A's fallback time are both silent.
+    inject("lora2mqtt/portail/receipt", { id: idA, counter: 12, result: "applied", ms: 9000, late: false });
+    vi.advanceTimersByTime(RECEIPT_FALLBACK_MS / 2);
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "pending"]);
+
+    // B still follows its own course.
+    inject("lora2mqtt/portail/receipt", { id: idB, counter: 13, result: "applied", ms: 300, late: false });
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "pending", "delivered"]);
+    await plugin.stop();
+  });
+
+  it("keeps orders on another key or device independent", async () => {
+    const { plugin, emit } = await startPlugin();
+    const idA = await sendGateOrder(plugin);
+    await plugin.executeOrder(GATE, "mode", "auto");
+    inject("lora2mqtt/portail/receipt", { id: idA, counter: 12, result: "applied", ms: 300, late: false });
+
+    expect(receiptEvents(emit).map((e) => [e.orderKey, e.status])).toEqual([
+      ["gate", "pending"], ["mode", "pending"], ["gate", "delivered"],
+    ]);
+    await plugin.stop();
+  });
+
+  it("never lets a reordered intermediate overwrite a terminal status", async () => {
+    const { plugin, emit } = await startPlugin();
+    const id = await sendGateOrder(plugin);
+    inject("lora2mqtt/portail/receipt", { id, counter: 12, result: "applied", ms: 300, late: false });
+    inject("lora2mqtt/portail/receipt", { id, counter: 12, result: "received", ms: 250, late: false });
+    await plugin.stop();
+
+    expect(receiptEvents(emit).map((e) => e.status)).toEqual(["pending", "delivered"]);
+  });
+
+  it("never throws from executeOrder because of receipt bookkeeping", async () => {
+    const { plugin, emit } = await startPlugin();
+    emit.mockImplementation(() => { throw new Error("bus down"); });
+
+    await expect(plugin.executeOrder(GATE, "gate", 1)).resolves.toBeUndefined();
+    expect(JSON.parse(client.published.at(-1)!.payload)["#id"]).toBeTypeOf("string");
+    // The 20 s fallback fires into the same broken bus without escaping.
+    expect(() => vi.advanceTimersByTime(RECEIPT_FALLBACK_MS)).not.toThrow();
+    emit.mockReset();
+    await plugin.stop();
   });
 });
