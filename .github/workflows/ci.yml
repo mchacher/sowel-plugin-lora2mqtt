@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: CI only reads the repo. Publishing is release.yml's job.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Test, typecheck, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Node major as release.yml, so a green CI means the tarball the
+      # release workflow builds compiles on the runtime it will be built on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+      - run: npm test
+
+      # The release workflow runs this on a tag. Running it here too means a
+      # build break surfaces on the PR, not halfway through a publish.
+      - run: npm run build
