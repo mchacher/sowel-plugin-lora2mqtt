@@ -7,6 +7,7 @@
  */
 
 import mqtt, { type MqttClient, type IClientOptions } from "mqtt";
+import { describeMqttError, DEFAULT_MQTT_URL } from "./mqtt-status-detail.js";
 
 // ============================================================
 // Local type definitions
@@ -54,7 +55,7 @@ interface IntegrationPlugin {
   getStatus(): IntegrationStatus; isConfigured(): boolean; getSettingsSchema(): IntegrationSettingDef[];
   start(options?: { pollOffset?: number }): Promise<void>; stop(): Promise<void>;
   executeOrder(device: Device, orderKeyOrDispatchConfig: string | Record<string, unknown>, value: unknown): Promise<void>;
-  refresh?(): Promise<void>; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
+  refresh?(): Promise<void>; getStatusDetail?(): string | null; getPollingInfo?(): { lastPollAt: string; intervalMs: number } | null;
 }
 
 // ============================================================
@@ -128,6 +129,8 @@ type MessageHandler = (topic: string, payload: Buffer) => void;
 
 class MqttConnector {
   private client: MqttClient | null = null;
+  /** Spec 216 (sowel): the last connection error, as a sentence; null once connected. */
+  private lastErrorDetail: string | null = null;
   private logger: Logger;
   private url: string;
   private options: IClientOptions;
@@ -146,11 +149,11 @@ class MqttConnector {
 
       this.client = mqtt.connect(this.url, this.options);
 
-      this.client.on("connect", () => { this.logger.info({ url: this.url }, "MQTT connected"); doResolve(); });
+      this.client.on("connect", () => { this.lastErrorDetail = null; this.logger.info({ url: this.url }, "MQTT connected"); doResolve(); });
       this.client.on("reconnect", () => { this.logger.warn({ url: this.url }, "MQTT reconnecting"); });
       this.client.on("disconnect", () => { this.logger.warn({ url: this.url }, "MQTT disconnected"); });
       this.client.on("offline", () => { this.logger.warn({ url: this.url }, "MQTT offline"); });
-      this.client.on("error", (err) => { this.logger.error({ err: err.message } as Record<string, unknown>, "MQTT error"); doResolve(); });
+      this.client.on("error", (err) => { this.lastErrorDetail = describeMqttError(err, this.url); this.logger.error({ err: err.message } as Record<string, unknown>, "MQTT error"); doResolve(); });
       this.client.on("message", (topic, payload) => { this.routeMessage(topic, payload); });
 
       setTimeout(() => { doResolve(); }, 10_000);
@@ -173,6 +176,9 @@ class MqttConnector {
   }
 
   isConnected(): boolean { return this.client?.connected ?? false; }
+
+  /** Spec 216 (sowel): why the broker connection is down, or null. */
+  getStatusDetail(): string | null { return this.isConnected() ? null : this.lastErrorDetail; }
 
   async disconnect(): Promise<void> {
     if (this.client) { await this.client.endAsync(); this.logger.info("MQTT disconnected"); }
@@ -246,11 +252,18 @@ class Lora2MqttPlugin implements IntegrationPlugin {
     return this.status;
   }
 
+  /** Spec 216 (sowel): why the broker connection is down, shown under the status. */
+  getStatusDetail(): string | null {
+    const status = this.getStatus();
+    if (status === "connected" || status === "not_configured") return null;
+    return this.mqttConnector?.getStatusDetail() ?? null;
+  }
+
   isConfigured(): boolean { return this.getSetting("mqtt_url") !== undefined; }
 
   getSettingsSchema(): IntegrationSettingDef[] {
     return [
-      { key: "mqtt_url", label: "MQTT Broker URL", type: "text", required: true, placeholder: "mqtt://192.168.0.45:1883" },
+      { key: "mqtt_url", label: "MQTT Broker URL", type: "text", required: true, placeholder: DEFAULT_MQTT_URL, defaultValue: DEFAULT_MQTT_URL },
       { key: "mqtt_username", label: "MQTT Username", type: "text", required: false },
       { key: "mqtt_password", label: "MQTT Password", type: "password", required: false },
       { key: "mqtt_client_id", label: "MQTT Client ID", type: "text", required: false, defaultValue: "sowel-lora" },
